@@ -18,6 +18,9 @@ from detection_utils import (
 app = Flask(__name__)
 CORS(app)
 
+MAX_INFERENCE_SIDE = 960
+YOLO_IMAGE_SIZE = 640
+
 # Load YOLOv8 model - use larger model for better accuracy
 try:
     model = YOLO("yolo26n.pt")  # Medium model for better accuracy
@@ -91,13 +94,23 @@ def detect_objects(image, conf_threshold=0.55, iou_threshold=0.45, use_preproces
     """Perform object detection on image with advanced enhancements."""
     try:
         original_image = image.copy()
+
+        # Resize oversized uploads to keep inference responsive on low-memory instances.
+        height, width = image.shape[:2]
+        longest_side = max(height, width)
+        if longest_side > MAX_INFERENCE_SIDE:
+            scale = MAX_INFERENCE_SIDE / float(longest_side)
+            target_width = int(width * scale)
+            target_height = int(height * scale)
+            image = cv2.resize(image, (target_width, target_height), interpolation=cv2.INTER_AREA)
+            original_image = cv2.resize(original_image, (target_width, target_height), interpolation=cv2.INTER_AREA)
         
         # Preprocess image for better detection
         if use_preprocessing:
             image = preprocess_image(image)
         
         # Run YOLO detection
-        results = model(image, conf=conf_threshold, iou=iou_threshold)
+        results = model(image, conf=conf_threshold, iou=iou_threshold, imgsz=YOLO_IMAGE_SIZE, verbose=False)
         
         detections = []
         
