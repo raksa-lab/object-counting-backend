@@ -12,11 +12,15 @@ from detection_utils import (
     filter_detections_by_confidence,
     count_objects_by_class,
     ObjectTracker,
-    draw_detections
+    draw_detections,
+    calculate_iou
 )
 
 app = Flask(__name__)
 CORS(app)
+
+# Reject very large request bodies early to avoid memory spikes.
+app.config['MAX_CONTENT_LENGTH'] = 8 * 1024 * 1024
 
 MAX_INFERENCE_SIDE = 960
 YOLO_IMAGE_SIZE = 640
@@ -42,12 +46,30 @@ DEFAULT_CONFIG = {
     'min_detection_area': 100, # Minimum bbox area (filters tiny false positives)
 }
 
+
+def clamp(value, minimum, maximum):
+    return max(minimum, min(maximum, value))
+
+
+def parse_bool(value, default=False):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in ('1', 'true', 'yes', 'y', 'on'):
+            return True
+        if normalized in ('0', 'false', 'no', 'n', 'off'):
+            return False
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return default
+
 def decode_image(image_data):
     """Decode base64 image data."""
     try:
         if ',' in image_data:
             image_data = image_data.split(',')[1]
-        nparr = np.frombuffer(base64.b64decode(image_data), np.uint8)
+        nparr = np.frombuffer(base64.b64decode(image_data, validate=True), np.uint8)
         img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         return img
     except Exception as e:
@@ -75,7 +97,6 @@ def filter_redundant_detections(detections, class_overlap_threshold=0.7):
         for det2 in filtered:
             # Check if same class and heavily overlapping
             if det1['class'] == det2['class']:
-                from detection_utils import calculate_iou
                 iou = calculate_iou(det1['bbox'], det2['bbox'])
                 if iou > class_overlap_threshold:
                     # Keep the one with higher confidence
@@ -150,10 +171,12 @@ def detect_objects(image, conf_threshold=0.55, iou_threshold=0.45, use_preproces
         print(f"Error detecting objects: {e}")
         return None, {}, []
 
-def encode_image(image):
+def encode_image(image, quality=75):
     """Encode image to base64."""
     try:
-        _, buffer = cv2.imencode('.jpg', image)
+        quality = int(clamp(quality, 40, 95))
+        encode_params = [int(cv2.IMWRITE_JPEG_QUALITY), quality]
+        _, buffer = cv2.imencode('.jpg', image, encode_params)
         base64_image = base64.b64encode(buffer).decode('utf-8')
         return f"data:image/jpeg;base64,{base64_image}"
     except Exception as e:
@@ -173,15 +196,17 @@ def get_config():
 def detect():
     """Detect objects in uploaded image with automatic optimizations."""
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
         image_data = data.get('image')
+        include_image = parse_bool(data.get('include_image', True), default=True)
+        output_quality = int(clamp(float(data.get('output_quality', 75)), 40, 95))
         
         # Use provided values or fallback to optimal defaults
-        conf_threshold = float(data.get('confidence', DEFAULT_CONFIG['confidence']))
-        iou_threshold = float(data.get('iou_threshold', DEFAULT_CONFIG['iou_threshold']))
-        use_preprocessing = data.get('preprocess', DEFAULT_CONFIG['preprocess'])
-        use_nms = data.get('use_nms', DEFAULT_CONFIG['use_nms'])
-        min_area = int(data.get('min_area', DEFAULT_CONFIG['min_detection_area']))
+        conf_threshold = clamp(float(data.get('confidence', DEFAULT_CONFIG['confidence'])), 0.01, 0.99)
+        iou_threshold = clamp(float(data.get('iou_threshold', DEFAULT_CONFIG['iou_threshold'])), 0.1, 0.95)
+        use_preprocessing = parse_bool(data.get('preprocess', DEFAULT_CONFIG['preprocess']), default=DEFAULT_CONFIG['preprocess'])
+        use_nms = parse_bool(data.get('use_nms', DEFAULT_CONFIG['use_nms']), default=DEFAULT_CONFIG['use_nms'])
+        min_area = int(clamp(float(data.get('min_area', DEFAULT_CONFIG['min_detection_area'])), 0, 1000000))
         
         if not image_data:
             return jsonify({'error': 'No image provided'}), 400
@@ -202,7 +227,7 @@ def detect():
         if annotated_image is None:
             return jsonify({'error': 'Detection failed'}), 500
         
-        result_image = encode_image(annotated_image)
+        result_image = encode_image(annotated_image, quality=output_quality) if include_image else None
         
         return jsonify({
             'success': True,
