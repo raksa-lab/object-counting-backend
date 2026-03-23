@@ -4,7 +4,6 @@ import cv2
 import numpy as np
 import base64
 from ultralytics import YOLO
-import tempfile
 import os
 from detection_utils import (
     preprocess_image, 
@@ -23,15 +22,17 @@ CORS(app)
 app.config['MAX_CONTENT_LENGTH'] = 8 * 1024 * 1024
 
 MAX_INFERENCE_SIDE = 960
-YOLO_IMAGE_SIZE = 640
+IS_RENDER = bool(os.getenv('RENDER_EXTERNAL_URL'))
+YOLO_IMAGE_SIZE = int(os.getenv('YOLO_IMAGE_SIZE', '512' if IS_RENDER else '640'))
+MODEL_PATH = os.getenv('YOLO_MODEL_PATH', 'yolov8n.pt' if IS_RENDER else 'yolo26n.pt')
 
-# Load YOLOv8 model - use larger model for better accuracy
+# Load model with deployment-aware defaults.
 try:
-    model = YOLO("yolo26n.pt")  # Medium model for better accuracy
-    print("✓ Loaded YOLOv8m model")
+    model = YOLO(MODEL_PATH)
+    print(f"Loaded model: {MODEL_PATH}")
 except:
     model = YOLO("yolov8n.pt")  # Fallback to nano
-    print("✓ Loaded YOLOv8n model")
+    print("Loaded fallback model: yolov8n.pt")
 
 # Initialize object tracker for video processing
 tracker = ObjectTracker(max_missing_frames=10, distance_threshold=50)
@@ -40,7 +41,7 @@ tracker = ObjectTracker(max_missing_frames=10, distance_threshold=50)
 DEFAULT_CONFIG = {
     'confidence': 0.55,        # Balanced confidence
     'iou_threshold': 0.45,     # Stricter NMS
-    'preprocess': True,        # Always enhance
+    'preprocess': not IS_RENDER,  # Keep Render requests lighter by default
     'use_nms': True,           # Always remove duplicates
     'use_tracking': False,     # Set per-request
     'min_detection_area': 100, # Minimum bbox area (filters tiny false positives)
@@ -131,7 +132,14 @@ def detect_objects(image, conf_threshold=0.55, iou_threshold=0.45, use_preproces
             image = preprocess_image(image)
         
         # Run YOLO detection
-        results = model(image, conf=conf_threshold, iou=iou_threshold, imgsz=YOLO_IMAGE_SIZE, verbose=False)
+        results = model(
+            image,
+            conf=conf_threshold,
+            iou=iou_threshold,
+            imgsz=YOLO_IMAGE_SIZE,
+            max_det=100,
+            verbose=False
+        )
         
         detections = []
         
@@ -260,7 +268,7 @@ def health():
     try:
         return jsonify({
             'status': 'ok',
-            'model': 'yolov8m',
+            'model': MODEL_PATH,
             'config': DEFAULT_CONFIG,
             'optimization': 'enabled'
         })
