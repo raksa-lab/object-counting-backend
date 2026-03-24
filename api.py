@@ -28,6 +28,7 @@ PREFERRED_MODELS = [
     os.getenv('YOLO_MODEL_PATH', '').strip(),
     'yolo26n.pt',
     'yolov8m.pt',
+    'yolov8n.pt',
 ]
 
 
@@ -41,14 +42,28 @@ def resolve_model_path():
 
 MODEL_PATH = resolve_model_path()
 
-# Load model with deployment-aware defaults.
-try:
-    model = YOLO(MODEL_PATH)
-    print(f"Loaded model: {MODEL_PATH}")
-except:
-    fallback_model = 'yolo26n.pt' if os.path.exists('yolo26n.pt') else 'yolov8n.pt'
-    model = YOLO(fallback_model)
-    print(f"Loaded fallback model: {fallback_model}")
+def load_model():
+    """Load the first working model candidate without crashing app startup."""
+    tried = []
+    seen = set()
+
+    for candidate in [MODEL_PATH] + PREFERRED_MODELS:
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+
+        try:
+            loaded_model = YOLO(candidate)
+            print(f"Loaded model: {candidate}")
+            return loaded_model, candidate
+        except Exception as exc:
+            tried.append(f"{candidate}: {exc}")
+            print(f"Failed to load model {candidate}: {exc}")
+
+    raise RuntimeError("No YOLO model could be loaded. Tried: " + " | ".join(tried))
+
+
+model, MODEL_PATH = load_model()
 
 # Initialize object tracker for video processing
 tracker = ObjectTracker(max_missing_frames=10, distance_threshold=50)
