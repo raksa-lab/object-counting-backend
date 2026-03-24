@@ -24,15 +24,31 @@ app.config['MAX_CONTENT_LENGTH'] = 8 * 1024 * 1024
 MAX_INFERENCE_SIDE = 960
 IS_RENDER = bool(os.getenv('RENDER_EXTERNAL_URL'))
 YOLO_IMAGE_SIZE = int(os.getenv('YOLO_IMAGE_SIZE', '512' if IS_RENDER else '640'))
-MODEL_PATH = os.getenv('YOLO_MODEL_PATH', 'yolov8n.pt' if IS_RENDER else 'yolo26n.pt')
+PREFERRED_MODELS = [
+    os.getenv('YOLO_MODEL_PATH', '').strip(),
+    'yolo26n.pt',
+    'yolov8m.pt',
+]
+
+
+def resolve_model_path():
+    for candidate in PREFERRED_MODELS:
+        if candidate and os.path.exists(candidate):
+            return candidate
+    # Final fallback keeps old behavior if local files are unavailable.
+    return 'yolov8n.pt'
+
+
+MODEL_PATH = resolve_model_path()
 
 # Load model with deployment-aware defaults.
 try:
     model = YOLO(MODEL_PATH)
     print(f"Loaded model: {MODEL_PATH}")
 except:
-    model = YOLO("yolov8n.pt")  # Fallback to nano
-    print("Loaded fallback model: yolov8n.pt")
+    fallback_model = 'yolo26n.pt' if os.path.exists('yolo26n.pt') else 'yolov8n.pt'
+    model = YOLO(fallback_model)
+    print(f"Loaded fallback model: {fallback_model}")
 
 # Initialize object tracker for video processing
 tracker = ObjectTracker(max_missing_frames=10, distance_threshold=50)
